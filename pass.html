@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Password Converter — 严格可逆版</title>
+<style>
+    body {
+        font-family: Arial;
+        background-color: #f4f4f4;
+        padding: 20px;
+    }
+    .container {
+        width: 480px;
+        margin: 0 auto;
+        background: #fff;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 0 12px rgba(0,0,0,0.1);
+    }
+    textarea {
+        width: 100%;
+        height: 100px;
+        padding: 10px;
+        margin-top: 10px;
+        box-sizing: border-box;
+        border-radius: 6px;
+        border: 2px solid #ccc;
+        resize: none;
+        font-size: 14px;
+        transition: 0.2s;
+        font-family: monospace;
+    }
+    textarea.invalid {
+        border-color: #ff4d4d !important;
+        background: #ffecec;
+    }
+    button {
+        width: 100%;
+        padding: 12px;
+        margin-top: 10px;
+        background: #007bff;
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 16px;
+    }
+    button:hover {
+        background: #0056b3;
+    }
+    h2 { text-align: center; margin: 0 0 10px 0; }
+    .hint { font-size: 13px; color: #666; margin-top:6px; }
+</style>
+</head>
+<body>
+
+<div class="container">
+    <h2>密码转化器（严格可逆）</h2>
+
+    <label>请输入时间月日+账号ID（禁止输入中文 / 空格）</label>
+    <textarea id="inputText" placeholder="例如：1015ABC"></textarea>
+    <div class="hint">仅允许 ASCII 可打印字符（不含空格）。非法时输入框变红，且无法生成。</div>
+
+    <button onclick="encodeText()">编码 → 生成复杂密码</button>
+
+    <label>输出复杂密码（包含 1 个大写字母 + 1 个符号 @ ! $ & #）</label>
+    <textarea id="outputText" placeholder="生成的复杂密码"></textarea>
+
+    <button onclick="decodeText()">解码 → 还原原始字符串</button>
+    <div class="hint" style="margin-top:8px;">说明：输出长度会随输入变化，但可逆性严格保证。</div>
+</div>
+
+<script>
+// ------------------- 工具函数 -------------------
+
+// 校验输入：只允许 ASCII 33–126（可打印字符，但不含空格 32）
+function validateInput(str) {
+    return /^[\x21-\x7E]+$/.test(str);
+}
+
+// bytes <-> hex
+function bytesToHex(bytes) {
+    let s = "";
+    for (let b of bytes) {
+        s += b.toString(16).padStart(2, "0");
+    }
+    return s;
+}
+function hexToBytes(hex) {
+    if (hex.length % 2 !== 0) hex = "0" + hex;
+    const out = [];
+    for (let i = 0; i < hex.length; i += 2) {
+        out.push(parseInt(hex.slice(i, i+2), 16));
+    }
+    return out;
+}
+
+// base36 <-> BigInt
+function bigIntFromBase36(s) {
+    if (!s) return 0n;
+    let v = 0n;
+    for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        const code = ch.charCodeAt(0);
+        let d;
+        if (code >= 48 && code <= 57) d = BigInt(code - 48);          // 0-9
+        else if (code >= 97 && code <= 122) d = BigInt(code - 97 + 10); // a-z
+        else { throw new Error("Invalid base36 char: " + ch); }
+        v = v * 36n + d;
+    }
+    return v;
+}
+
+// ------------------- 编码/解码核心 -------------------
+
+// 符号集合（你指定）
+const SYMBOLS = ["@", "!", "$", "&", "#"];
+
+// 把输入字符串编码为最终密码（严格可逆）
+// 结构： payload = <len36(3chars)> + <base36_of_bigint(hex_of_bytes)>
+// 最终 password = payload + <UppercaseLetter> + <SymbolFromSet>
+function encodeText() {
+    const inputBox = document.getElementById("inputText");
+    const outputBox = document.getElementById("outputText");
+    const txt = inputBox.value;
+
+    // 为空：清除标记和输出
+    if (txt === "") {
+        inputBox.classList.remove("invalid");
+        outputBox.value = "";
+        return;
+    }
+
+    // 校验
+    if (!validateInput(txt)) {
+        inputBox.classList.add("invalid");
+        return;
+    } else {
+        inputBox.classList.remove("invalid");
+    }
+
+    try {
+        // 转 bytes (UTF-8)
+        const enc = new TextEncoder();
+        const bytes = enc.encode(txt); // Uint8Array
+        const L = bytes.length;
+
+        // hex
+        const hex = bytesToHex(bytes); // '' if length 0 handled above
+
+        // BigInt from hex
+        let big;
+        if (hex === "") big = 0n;
+        else big = BigInt("0x" + hex);
+
+        // base36 representation (lowercase letters + digits)
+        let base36 = big.toString(36); // if big==0 => "0"
+
+        // length prefix (3 chars, base36) — 支持长度到 36^3-1 (~46655 bytes)
+        const len36 = L.toString(36).padStart(3, "0");
+
+        const payload = len36 + base36; // all in [0-9a-z]
+
+        // deterministic uppercase char (derived from big)
+        const upperChar = String.fromCharCode(65 + Number(big % 26n)); // 'A' + (big % 26)
+
+        // deterministic symbol
+        const symIndex = Number((big >> 8n) % BigInt(SYMBOLS.length));
+        const symChar = SYMBOLS[symIndex];
+
+        // final password
+        const password = payload + upperChar + symChar;
+
+        outputBox.value = password;
+    } catch (e) {
+        // 出错时标红（不弹窗）
+        inputBox.classList.add("invalid");
+        outputBox.value = "";
+        console.error(e);
+    }
+}
+
+// 解码：把输出框内容还原为原始字符串
+function decodeText() {
+    const inputBox = document.getElementById("inputText");
+    const outputBox = document.getElementById("outputText");
+    const pwd = outputBox.value;
+
+    // 为空：清除标记并退出
+    if (pwd === "") {
+        inputBox.classList.remove("invalid");
+        return;
+    }
+
+    // 最低长度判定：3(len) + at least 1 base36 + 1 upper +1 sym  => >=6 
+    if (pwd.length < 6) {
+        inputBox.classList.add("invalid");
+        return;
+    }
+
+    try {
+        // remove last two chars (Upper + Symbol)
+        const payload = pwd.slice(0, -2);
+
+        // first 3 chars are len36
+        const len36 = payload.slice(0, 3);
+        const L = parseInt(len36, 36);
+
+        if (isNaN(L) || L < 0) { inputBox.classList.add("invalid"); return; }
+
+        const base36 = payload.slice(3); // may be "0" or longer
+
+        // big from base36
+        const big = bigIntFromBase36(base36);
+
+        // hex from big
+        let hex = big.toString(16);
+        // pad to 2*L chars (每字节两位十六进制)
+        const needed = L * 2;
+        if (hex.length < needed) hex = hex.padStart(needed, "0");
+
+        // convert hex to bytes
+        const bytes = hexToBytes(hex);
+
+        // decode bytes -> string
+        const dec = new TextDecoder();
+        const original = dec.decode(new Uint8Array(bytes));
+
+        // set input box (并校验：如果原始含非法字符则标红）
+        inputBox.value = original;
+        if (original === "" || !validateInput(original)) {
+            inputBox.classList.add("invalid");
+        } else {
+            inputBox.classList.remove("invalid");
+        }
+    } catch (e) {
+        inputBox.classList.add("invalid");
+        console.error(e);
+    }
+}
+
+// ------------------- 实时监听输入（空->不红；非法->变红） -------------------
+const inputBox = document.getElementById("inputText");
+inputBox.addEventListener("input", function () {
+    const v = this.value;
+    if (v === "") {
+        this.classList.remove("invalid");
+        return;
+    }
+    if (!validateInput(v)) this.classList.add("invalid");
+    else this.classList.remove("invalid");
+});
+</script>
+
+</body>
+</html>
